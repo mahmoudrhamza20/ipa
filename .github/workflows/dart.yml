@@ -1,51 +1,70 @@
 name: iOS-ipa-build
-
 on:
   workflow_dispatch:
-
 jobs:
   build-ios:
     name: 🎉 iOS Build
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v3
-
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           architecture: x64
-
       - run: flutter pub get
-
-      # Ensure the Podfile has the correct platform
-      - name: Set iOS deployment target
+      
+      # Clean and deintegrate
+      - name: Clean and deintegrate
         run: |
           cd ios
-          if ! grep -q "platform :ios, '15.5'" Podfile; then
-            echo "platform :ios, '15.5'" | cat - Podfile > temp && mv temp Podfile
-          fi
-          cd ..
-      # Clean and reinstall CocoaPods
-      - name: Clean and update CocoaPods
+          rm -rf Pods
+          rm -f Podfile.lock
+          pod deintegrate
+          
+      # Create fresh Podfile
+      - name: Create Podfile
         run: |
-          rm -f ios/Podfile.lock
+          cd ios
+          cat > Podfile << 'EOL'
+          platform :ios, '15.5'
+          
+          target 'Runner' do
+            use_frameworks!
+            use_modular_headers!
+            
+            flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+            
+            target 'RunnerTests' do
+              inherit! :search_paths
+            end
+          end
+          
+          post_install do |installer|
+            installer.pods_project.targets.each do |target|
+              flutter_additional_ios_build_settings(target)
+              target.build_configurations.each do |config|
+                config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.5'
+              end
+            end
+          end
+          EOL
+          
+      # Install pods
+      - name: Install Pods
+        run: |
           cd ios
           pod repo update
-          pod deintegrate
           pod install
-          cd ..
+          
       - run: flutter build ios --release --no-codesign
-
-      - run: mkdir Payload
+      
+      - name: Create IPA
         working-directory: build/ios/iphoneos
-
-      - run: mv Runner.app/ Payload
-        working-directory: build/ios/iphoneos
-
-      - name: Zip output
-        run: zip -qq -r -9 FlutterIpaExport.ipa Payload
-        working-directory: build/ios/iphoneos
-
+        run: |
+          mkdir Payload
+          mv Runner.app Payload/
+          zip -r FlutterIpaExport.ipa Payload
+          
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:
